@@ -3,7 +3,7 @@ from collections import defaultdict
 import sys
 import json
 from geopy.geocoders import Nominatim
-#from deep_translator import GoogleTranslator
+from deep_translator import GoogleTranslator
 from AdjacencyList import AdjacencyList
 import PySimpleGUI as sg
 import os.path
@@ -92,6 +92,7 @@ def retrieve_path(distances, src, dest):
     path.reverse()  # currently in backwards order
     return path
 def print_node_locations(node_map, node_numbers):
+    out_list = []
     for node_number in node_numbers:
         # Retrieve the location for the current node
         lat, lon = node_map[node_number]
@@ -101,6 +102,9 @@ def print_node_locations(node_map, node_numbers):
         translator = GoogleTranslator(source='auto', target='en')
         address = translator.translate(location.address)  # translate address from chinese to english
         print(address)
+        out_list.append(f"{node_number}: {{Longitude: {lon}, Latitude: {lat}}}" + "; " + address)
+    return out_list
+        
 def main():
     try:
         # Get list of files in folder
@@ -115,10 +119,10 @@ def main():
            and f.lower().endswith((".txt"))
     ]
 
-
+    
     list_column = [
         [
-            sg.Listbox(values=fnames, enable_events=True, size=(40, 21), key="-LIST-")
+            sg.Listbox(values=fnames, enable_events=True, size=(40, 40), key="-LIST-")
         ],
     ]
     numbers_column = [
@@ -153,17 +157,25 @@ def main():
             sg.Column(image_viewer_column2),
         ],
     ]
-
+    path_list_column = []
+    infrmation_column = []
+    layout3 = []
+    
     window = sg.Window("Choose City & Algorithm", layout1)
 
+    updates = 0
     graph = AdjacencyList()
     state = 1
     fileopened = False
+    coordfileopened = False
     cityname = ""
     algo = ""
     src = 0
     dest = 0
-
+    waiting_for_nums1 = True
+    waiting_for_nums2 = True
+    window3updated = False
+    window4updated = False
     while True:
         event, values = window.read()
         if event == "Exit" or event == sg.WIN_CLOSED:
@@ -182,19 +194,20 @@ def main():
         path = "data/" + cityname
         coordinates = cityname[:-4] + "_co.txt"
         coordinates_path = "coords/" + coordinates
-
-        with open(coordinates_path, 'r') as file:
-            file_content = file.read().strip()
-            lines = file_content.split("\n")
-
-            # Remove the header lines
-            data_lines = lines[6:]
-
-            # Create a map with key as node number and value as a pair of latitude/longitude
-            node_locations = {}
-            for i, line in enumerate(data_lines):
-                lat, lon = map(float, line.split())
-                node_locations[f"{i + 1}"] = (lat, lon)
+        if not coordfileopened:
+            with open(coordinates_path, 'r') as file:
+                file_content = file.read().strip()
+                lines = file_content.split("\n")
+    
+                # Remove the header lines
+                data_lines = lines[6:]
+    
+                # Create a map with key as node number and value as a pair of latitude/longitude
+                node_locations = {}
+                for i, line in enumerate(data_lines):
+                    lat, lon = map(float, line.split())
+                    node_locations[f"{i + 1}"] = (lat, lon)
+            coordfileopened = True
 
         try:
             if not fileopened:
@@ -223,42 +236,94 @@ def main():
         if event == "-LIST-" and state == 2 and not IP:  # A algorithm was chosen from the listbox
             try:
                 algo = values["-LIST-"][0]
-                window["-TOUT-"].update(cityname +": " + algo + "\n" +
-                                        f"Enter a source node in the top left text box, \n"
-                                        f"please choose an integer from 1 to {len(graph.map)}\n")
+                window["-TOUT-"].update(cityname +": " + algo + "\n")
             except:
                 pass
             if algo == "Dijkstra":
                 state = 3
-                waiting_for_nums1 = True
-                waiting_for_nums2 = True
                 window.Close()
                 window = sg.Window("Input Source and Destination Nodes", layout2)
-
-        if state == 3:
+            elif algo == "Bellman-Ford":
+                state = 4
+                window.Close()
+                window = sg.Window("Input Source and Destination Nodes", layout2)
+        if state == 3 or state == 4:
             if waiting_for_nums1 or waiting_for_nums2:
                 if event == 'Enter1' and waiting_for_nums1:
-                    src = int(values['input_text1'])
+                    src = (values['input_text1'])
                     waiting_for_nums1 = False
                 if event == 'Enter2' and waiting_for_nums2:
-                    dest = int(values['input_text2'])
+                    dest = (values['input_text2'])
                     waiting_for_nums2 = False
+            if not waiting_for_nums1 and not waiting_for_nums2:
+                if state == 3:
+                    distances = dijkstra(src, graph.map)
+                if state == 4:
+                    distances = bellman_ford(src, graph.map)
+                
+                   
+                route = retrieve_path(distances, src, dest)
+                print(
+                    f"Here is the shortest route to get to your destination, it requires {distances[dest][0]:.2f} meters.\n")
+                shortest_path = ""
+                shortest_path += route[0]
+                
+                for i in range(1, len(route)):
+                    shortest_path += " -> "
+                    shortest_path += route[i]
+                if not window3updated:
+                    path_list_column = [
+                        [sg.Text("Node path:")],
+                        [sg.Column(layout=[
+                            [sg.Multiline(default_text=shortest_path, size=(90, 120), key='path_text', autoscroll=True)],
+                        ], scrollable=True, vertical_scroll_only=True)],
+                    ]
+                    information_column = [
+                        [sg.Text("Node information:")],
+                        [sg.Column(layout=[
+                            [sg.Listbox(values=["Node information will display here","Please wait, this may take a while..."], size=(90, 120), key='listbox', enable_events=True)],
+                        ], scrollable=True, vertical_scroll_only=True)],
+                    ]
+                    layout3 = [
+                        [
+                            sg.Column(path_list_column),
+                            sg.VSeperator(),
+                            sg.Column(information_column),
+                        ],
+                    ]
+                    window.Close()
+                    window = sg.Window("Path Information", layout3)
+                    while True:
+                        event, values = window.read(timeout=100)
+                        if event == "Exit" or event == sg.WIN_CLOSED:
+                            break
+                        if not window4updated:
+                            node_info_list  = print_node_locations(node_locations, route)
+                            window.Close()
+                            path_list_column2 = [
+                                [sg.Text("Node path:")],
+                                [sg.Column(layout=[
+                                    [sg.Multiline(default_text=shortest_path, size=(90, 120), key='path_text', autoscroll=True)],
+                                ], scrollable=True, vertical_scroll_only=True)],
+                            ]
+                            information_column2 = [
+                                [sg.Text("Node information:")],
+                                [sg.Column(layout=[
+                                    [sg.Listbox(values=node_info_list, size=(90, 120), key='listbox', enable_events=True)],
+                                ], scrollable=True, vertical_scroll_only=True)],
+                            ]
+                            layout4 = [
+                                [
+                                    sg.Column(path_list_column2),
+                                    sg.VSeperator(),
+                                    sg.Column(information_column2),
+                                ],
+                            ]
+                            window = sg.Window("Path Information", layout4)
+                            window4updated = True
+               
+                
 
-            distances = dijkstra(src, graph.map)
-            route = retrieve_path(distances, src, dest)
-
-            print(
-                f"Here is the shortest route to get to your destination, it requires {distances[dest][0]:.2f} meters.\n")
-            shortest_path = ""
-            shortest_path += route[0]
-
-            for i in range(1, len(route)):
-                shortest_path += "->"
-                shortest_path += route[i]
-
-            print(shortest_path)
-
-            print_node_locations(node_locations, route)
 
     window.close()
 
